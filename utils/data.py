@@ -42,7 +42,7 @@ class DWIPatchDataset(torch.utils.data.Dataset):
         self.opts = opts
         
         # Extracting the dimension of the images using a sample image.
-        sample_path = os.path.join(self.opts.data_dir, subject_list[0], 'T1w', 'T1w_acpc_dc_restore_1.25.nii.gz')
+        sample_path = os.path.join(self.opts.data_dir, subject_list[0], 'T1w', 'T1_stripped.nii.gz')
         nifti = nib.load(sample_path)
         image_dims = nifti.shape
         self.spatial_resolution = [len(subject_list)] + list(image_dims)
@@ -71,9 +71,9 @@ class DWIPatchDataset(torch.utils.data.Dataset):
         input_signals = self.data_tensor[central_coords[0],central_coords[1]-4:central_coords[1]+5, central_coords[2]-4:central_coords[2]+5, central_coords[3]-4:central_coords[3]+5, :]
         
         target_fod = self.gt_tensor[central_coords[0], central_coords[1], central_coords[2], central_coords[3], :]
-       
+
         gt_fixel = self.gt_fixel_tensor[central_coords[0], central_coords[1], central_coords[2], central_coords[3]]
-        
+
         AQ = self.AQ_tensor[central_coords[0],:,:]
         
         return input_signals.float().unsqueeze(-1), target_fod.float(), AQ.float(), gt_fixel.float(), central_coords
@@ -142,7 +142,7 @@ class DWIPatchDataset(torch.utils.data.Dataset):
 
         for i, subject in enumerate(self.subject_list):
             #Importing the whole brain mask
-            path_wb = os.path.join(self.opts.data_dir,subject,'T1w',self.opts.diffusion_dir,'nodif_brain_mask.nii.gz')
+            path_wb = os.path.join(self.opts.data_dir,subject,'T1w',self.opts.diffusion_dir,'..', 'T1_stripped_bet.nii.gz')
             nifti_wb = nib.load(path_wb)
             self.wb_mask_tensor[i,:,:,:] = F.pad(torch.tensor(np.array(nifti_wb.dataobj)),(5,5,5,5,5,5), mode = 'constant')
             

@@ -57,12 +57,15 @@ class LossTracker():
     
     def add_val_losses(self, outputs, labels, val_fixel_loss, val_fixel_accuracy):
         
-        loss = self.criterion(outputs.squeeze()[:,:45], labels[:,:45])
+        # loss = self.criterion(outputs.squeeze()[:,:45], labels[:,:45])
         
-        self.val_loss_dict['Validation Loss'] += loss.item()
-        self.val_loss_dict['Validation ACC'] += util.ACC(outputs,labels).mean()
-        self.val_loss_dict['Validation Fixel Loss'] += val_fixel_loss.item()
-        self.val_loss_dict['Validation Fixel Accuracy'] += val_fixel_accuracy.item()
+        # self.val_loss_dict['Validation Loss'] += loss.item()
+        # self.val_loss_dict['Validation ACC'] += util.ACC(outputs,labels).mean()
+        # self.val_loss_dict['Validation Fixel Loss'] += val_fixel_loss.item()
+        # self.val_loss_dict['Validation Fixel Accuracy'] += val_fixel_accuracy.item()
+        
+        self.val_loss_dict['Validation Loss'] += val_fixel_loss.item()
+        self.val_loss_dict['Validation ACC'] += val_fixel_accuracy.item()
 
     def add_running_loss(self,loss,fod_loss,fixel_loss, fixel_accuracy):
         
@@ -98,9 +101,9 @@ def update_training_logs(train_losses, val_losses, current_training_details, mod
                         'lr': optimizer.state_dict()['param_groups'][0]['lr'], # Training state 
                         'best loss': current_training_details['best_loss'], # Performance measure
                         'best ACC': float(current_training_details['best_val_ACC']), # Performance measure 
-                        'deep_reg': float(net.module.deep_reg), # Training state
-                        'neg_reg':float(net.module.neg_reg), # Training state
-                        'alpha':float(net.module.alpha), # Training state
+                        # 'deep_reg': float(net.module.deep_reg), # Training state
+                        # 'neg_reg':float(net.module.neg_reg), # Training state
+                        # 'alpha':float(net.module.alpha), # Training state
                         'learn_lambda':opts.learn_lambda, # Config option
                         'Number of Parameters':param_num} # Model property
         

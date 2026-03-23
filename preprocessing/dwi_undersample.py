@@ -29,7 +29,7 @@ class UndersampleDataset(torch.utils.data.Dataset):
         self.keep_list= self.sample_lists()
 
         #Creating the data path and the mask path.
-        dwi_path = os.path.join(data_path, 'data.nii.gz')
+        dwi_path = os.path.join(data_path, 'data_denoised.nii.gz')
         
         #Loading the data for the subject
         image = nib.load(dwi_path)
@@ -51,7 +51,7 @@ class UndersampleDataset(torch.utils.data.Dataset):
         '''
         print('Saving data')
         im_usamp = nib.Nifti1Image(self.image[:,:,:,self.keep_list].float().detach().numpy(), affine=self.aff)
-        save_path = os.path.join(self.save_dir, 'data.nii.gz')
+        save_path = os.path.join(self.save_dir, 'data_denoised.nii.gz')
 
         nib.save(im_usamp, save_path)
         print('Finished saving data')

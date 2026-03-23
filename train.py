@@ -41,8 +41,10 @@ class NetworkTrainer():
         else:
             self.opts = opts # cont
             self.es = EarlyStopping.EarlyStopping(self.opts) # cont
-            self.net, self.P, self.param_num, self.current_training_details, self.model_save_path = Convcsdcfrnet.init_network(opts) # cont 
-            self.optimizer = init_network_optimizer(self.net.parameters(), opts.continue_training, self.opts.warmup_factor*self.opts.lr) # cont
+            # self.net, self.P, self.param_num, self.current_training_details, self.model_save_path = Convcsdcfrnet.init_network(opts) # cont 
+            # self.optimizer = init_network_optimizer(self.net.parameters(), opts.continue_training, self.opts.warmup_factor*self.opts.lr) # cont
+            self.class_network, self.P, self.param_num, self.current_training_details, self.model_save_path = network.init_fixnet(opts) # cont 
+
             self.iterations = 0 # cont
             self.epochs = 0
         
@@ -58,10 +60,12 @@ class NetworkTrainer():
         self.init_runtime_trackers(runtime_mem = 5)
 
         #Initialising the classification network:
-        self.class_network = network.init_fixnet(self.opts)
+        # self.class_network = network.init_fixnet(self.opts)
         self.class_criterion = torch.nn.CrossEntropyLoss()
+        self.optimizer = init_network_optimizer(self.class_network.parameters(), opts.continue_training, self.opts.warmup_factor*self.opts.lr) # cont
+
         print(f'The training state of the network is: {self.class_network.training}')
-        print(f'The gradient state of the network is: {self.class_network.casc[0].weight.requires_grad}')
+        print(f'The gradient state of the network is: {self.class_network.module.casc[0].weight.requires_grad}')
         print(self.optimizer.param_groups[0]['lr'])
 
     def training_loop(self):
@@ -89,21 +93,25 @@ class NetworkTrainer():
             
                 # Zero the parameter gradients and setting network to train
                 self.optimizer.zero_grad()
-                self.net.train()
+                # self.net.train()
+                self.class_network.train()
                 
                 self.rttracker.start_timer('sdnet forward pass')
-                outputs = self.net(inputs, AQ)
+                # outputs = self.net(inputs, AQ)
                 self.rttracker.stop_timer('sdnet forward pass')
                 self.rttracker.start_timer('fix forward pass')
-                fix_est = self.class_network(outputs.squeeze()[:,:45])
+                # fix_est = self.class_network(outputs.squeeze()[:,:45])
+                fix_est = self.class_network(labels[:,:45])
                 self.rttracker.stop_timer('fix forward pass')
                 #Calculating the loss function, backpropagation and stepping the optimizer
-                fod_loss = self.criterion(outputs.squeeze()[:,:45], labels[:,:45])
-                fixel_loss = self.opts.fixel_lambda*self.class_criterion(fix_est, gt_fixel.long())
+                # fod_loss = self.criterion(outputs.squeeze()[:,:45], labels[:,:45])
+                fod_loss = torch.tensor(0.0)
+                # fixel_loss = self.opts.fixel_lambda*self.class_criterion(fix_est, gt_fixel.long())
+                fixel_loss = self.class_criterion(fix_est, gt_fixel.long())
                 fixel_accuracy = tracker.fixel_accuracy(fix_est, gt_fixel)
                 
-                #loss = fod_loss+fixel_loss
-                loss = fod_loss + fixel_loss
+                # loss = fod_loss + fixel_loss
+                loss = fixel_loss
 
                 self.rttracker.start_timer('grad and step')
                 loss.backward()
@@ -152,15 +160,19 @@ class NetworkTrainer():
                 inputs, labels, AQ, gt_fixel = inputs.to(self.opts.device), labels.to(self.opts.device), AQ.to(self.opts.device), gt_fixel.to(self.opts.device)
 
                 #Could put this in a function connected with the model or alternatively put it in a function on its own
-                self.net.eval()
-                outputs = self.net(inputs, AQ)
+                # self.net.eval()
+                # outputs = self.net(inputs, AQ)
 
                 #Calculating the fixel based statistics. 
-                fix_est = self.class_network(outputs.squeeze()[:,:45])
-                fixel_loss = self.opts.fixel_lambda*self.class_criterion(fix_est, gt_fixel.long())
+                # fix_est = self.class_network(outputs.squeeze()[:,:45])
+                fix_est = self.class_network(labels.squeeze()[:,:45])
+                #fixel_loss = self.opts.fixel_lambda*self.class_criterion(fix_est, gt_fixel.long())
+                fixel_loss = self.class_criterion(fix_est, gt_fixel.long())
                 fixel_accuracy = tracker.fixel_accuracy(fix_est, gt_fixel)
 
-                self.loss_tracker.add_val_losses(outputs,labels, fixel_loss, fixel_accuracy)
+                # self.loss_tracker.add_val_losses(outputs,labels, fixel_loss, fixel_accuracy)
+                self.loss_tracker.add_val_losses(torch.tensor([[0.]*45]*2).to(self.opts.device), torch.tensor([[0.]*45]*2).to(self.opts.device),
+                                                  fixel_loss, fixel_accuracy)
                 self.rttracker.stop_timer('validation iter')
 
         self.rttracker.start_timer('post val steps')        
@@ -173,13 +185,13 @@ class NetworkTrainer():
 
         #Updating the training details.
         self.current_training_details = tracker.update_training_logs(self.loss_tracker.train_loss_dict, self.loss_tracker.val_loss_dict, self.current_training_details, self.model_save_path,
-                                                    self.net, epoch, i, self.opts, self.optimizer, self.param_num, self.train_dataloader, self.es, self.iterations)        
+                                                    self.class_network, epoch, i, self.opts, self.optimizer, self.param_num, self.train_dataloader, self.es, self.iterations)        
         
         #Resetting the losses for the next set of minibatches
         self.loss_tracker.reset_losses()
 
         
-        training_state_dict = {'net_state': self.net.state_dict(),
+        training_state_dict = {'net_state': self.class_network.state_dict(), #self.net.state_dict(),
             'optim_state': self.optimizer.state_dict(),
             'earlystopping_state': self.es.state_dict(),
             'epochs': epoch,
@@ -252,7 +264,8 @@ def init_from_train_dict(train_dict):
     es = EarlyStopping.EarlyStopping(opts)
     es.load_state_dict(train_dict['earlystopping_state'])  
 
-    net_tuple = Convcsdcfrnet.init_network(opts) # cont 
+    # net_tuple = Convcsdcfrnet.init_network(opts) # cont 
+    net_tuple = network.init_fixnet(opts) # cont 
 
     optimizer = init_network_optimizer(net_tuple[0].parameters(), True, opts.lr) # cont
 
