@@ -3,7 +3,8 @@ import utils.util as util
 import math
 import os 
 
-import torch 
+import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 import nibabel as nib 
 import numpy as np
@@ -42,7 +43,7 @@ class DWIPatchDataset(torch.utils.data.Dataset):
         self.opts = opts
         
         # Extracting the dimension of the images using a sample image.
-        sample_path = os.path.join(self.opts.data_dir, subject_list[0], 'T1w', 'T1w_acpc_dc_restore_1.25.nii.gz')
+        sample_path = os.path.join(self.opts.data_dir, subject_list[0], 'T1w', 'T1_stripped.nii.gz')
         nifti = nib.load(sample_path)
         image_dims = nifti.shape
         self.spatial_resolution = [len(subject_list)] + list(image_dims)
@@ -71,9 +72,9 @@ class DWIPatchDataset(torch.utils.data.Dataset):
         input_signals = self.data_tensor[central_coords[0],central_coords[1]-4:central_coords[1]+5, central_coords[2]-4:central_coords[2]+5, central_coords[3]-4:central_coords[3]+5, :]
         
         target_fod = self.gt_tensor[central_coords[0], central_coords[1], central_coords[2], central_coords[3], :]
-       
+
         gt_fixel = self.gt_fixel_tensor[central_coords[0], central_coords[1], central_coords[2], central_coords[3]]
-        
+
         AQ = self.AQ_tensor[central_coords[0],:,:]
         
         return input_signals.float().unsqueeze(-1), target_fod.float(), AQ.float(), gt_fixel.float(), central_coords
@@ -85,19 +86,22 @@ class DWIPatchDataset(torch.utils.data.Dataset):
         self.load_brain_masks()
         self.load_convolution_matricies()
         self.load_coords()
+        del self.ttgen_mask_tensor, self.wb_mask_tensor
         
     def load_input_signal(self):
         #Loading the DWI signal data into the data tensor
         print('Loading the signal data into RAM')
 
-        #Defining the input signal tensor.
-        self.data_tensor = F.pad(torch.zeros(self.spatial_resolution+[self.opts.dwi_number]),self.pad_tens, mode = 'constant')
+        #Defining the input signal tensor (float16 to halve RAM, pre-zeroed so padding is implicit).
+        X, Y, Z = self.spatial_resolution[1], self.spatial_resolution[2], self.spatial_resolution[3]
+        self.data_tensor = torch.zeros(self.spatial_resolution+[self.opts.dwi_number], dtype=torch.float16)
+        self.data_tensor = F.pad(self.data_tensor, self.pad_tens, mode='constant')
 
         for i, subject in enumerate(self.subject_list):
 
             path = os.path.join(self.opts.data_dir, subject, 'T1w', self.opts.diffusion_dir, self.opts.dwi_folder_name, self.opts.data_file)
             nifti = nib.load(path)
-            self.data_tensor[i,:,:,:,:] = F.pad(torch.tensor(np.array(nifti.dataobj)),self.pad_tens, mode = 'constant')
+            self.data_tensor[i, 5:5+X, 5:5+Y, 5:5+Z, :] = torch.tensor(np.array(nifti.dataobj, dtype=np.float16))
 
         #If performing inference need the affine and header information to allow the nifti file to be saved.
         if self.inference:
@@ -110,26 +114,28 @@ class DWIPatchDataset(torch.utils.data.Dataset):
         #Loading the ground truth fixel data into the gt_fixel_tensor tensor.
         print('Loading the ground truth fixel data into RAM')
 
-        #Defining the ground truth fixel tensor
-        self.gt_fixel_tensor = F.pad(torch.zeros(self.spatial_resolution), (5,5,5,5,5,5), mode = 'constant')
+        #Defining the ground truth fixel tensor (uint8 — integer class labels).
+        self.gt_fixel_tensor = F.pad(torch.zeros(self.spatial_resolution, dtype=torch.uint8), (5,5,5,5,5,5), mode = 'constant')
 
+        X, Y, Z = self.spatial_resolution[1], self.spatial_resolution[2], self.spatial_resolution[3]
         for i, subject in enumerate(self.subject_list):
             path = os.path.join(self.opts.data_dir, subject, 'T1w', self.opts.diffusion_dir, 'fixel_directory', 'fixnet_targets', 'gt_threshold_fixels.nii.gz')
             nifti = nib.load(path)
-            self.gt_fixel_tensor[i,:,:,:] = F.pad(torch.tensor(np.array(nifti.dataobj).astype(np.uint8)[:,:,:,0]),(5,5,5,5,5,5), mode = 'constant')
+            self.gt_fixel_tensor[i, 5:5+X, 5:5+Y, 5:5+Z] = torch.tensor(np.array(nifti.dataobj, dtype=np.uint8)[:,:,:,0])
 
     def load_gt_fod(self):
         #Loading the ground truth 
         print('Loading the ground Truth FOD data into RAM')
 
-        #Defining the ground truth FOD tensor
-        self.gt_tensor = F.pad(torch.zeros(self.spatial_resolution+[47]),self.pad_tens, mode = 'constant')
+        #Defining the ground truth FOD tensor (float16 to halve RAM, pre-zeroed so padding is implicit).
+        X, Y, Z = self.spatial_resolution[1], self.spatial_resolution[2], self.spatial_resolution[3]
+        self.gt_tensor = F.pad(torch.zeros(self.spatial_resolution+[47], dtype=torch.float16), self.pad_tens, mode='constant')
 
         for i, subject in enumerate(self.subject_list):
             #Should move the ground truth FOD to outside the undersampled folder to avoid this problem (note that it needs to be the who mrcat gt rather than just wm FOD)
             path = os.path.join(self.opts.data_dir, subject,'T1w','Diffusion','gt_fod.nii.gz')
             nifti = nib.load(path)
-            self.gt_tensor[i,:,:,:,:] = F.pad(torch.tensor(np.array(nifti.dataobj)),self.pad_tens, mode = 'constant')
+            self.gt_tensor[i, 5:5+X, 5:5+Y, 5:5+Z, :] = torch.tensor(np.array(nifti.dataobj, dtype=np.float16))
         print(f'The shape of the ground truth tensor is {self.gt_tensor.shape}')
 
     def load_brain_masks(self):
@@ -142,7 +148,7 @@ class DWIPatchDataset(torch.utils.data.Dataset):
 
         for i, subject in enumerate(self.subject_list):
             #Importing the whole brain mask
-            path_wb = os.path.join(self.opts.data_dir,subject,'T1w',self.opts.diffusion_dir,'nodif_brain_mask.nii.gz')
+            path_wb = os.path.join(self.opts.data_dir,subject,'T1w',self.opts.diffusion_dir,'..', 'T1_stripped_bet.nii.gz')
             nifti_wb = nib.load(path_wb)
             self.wb_mask_tensor[i,:,:,:] = F.pad(torch.tensor(np.array(nifti_wb.dataobj)),(5,5,5,5,5,5), mode = 'constant')
             
@@ -198,32 +204,38 @@ class DWIPatchDataset(torch.utils.data.Dataset):
 
     def load_coords(self):
         print('Creating Co-ordinate grid')
-        #Creating a meshgrid for the subject - a volume where each voxel is the x,y,z coordinate.
-        seq_0 = torch.tensor([i for i in range(self.wb_mask_tensor.shape[0])])
-        seq_1 = torch.tensor([i for i in range(self.wb_mask_tensor.shape[1])])
-        seq_2 = torch.tensor([i for i in range(self.wb_mask_tensor.shape[2])])
-        seq_3 = torch.tensor([i for i in range(self.wb_mask_tensor.shape[3])])
-
-        grid_0, grid_1, grid_2, grid_3 = torch.meshgrid(seq_0, seq_1, seq_2, seq_3)
-        grid = torch.stack((grid_0, grid_1, grid_2, grid_3), 4)
-
-        #Making a vector containing the co-ordinates of only pixels which are in the brain mask.
+        #Use nonzero to avoid building a full meshgrid (~14 GB spike for 50 subjects).
         if self.training_voxels == False:
-            self.coords = grid[self.wb_mask_tensor.to(bool),:]
+            mask = self.wb_mask_tensor.to(bool)
         else:
-            self.coords = grid[(self.ttgen_mask_tensor[:,:,:,:,0].to(bool) | self.ttgen_mask_tensor[:,:,:,:,1].to(bool) | self.ttgen_mask_tensor[:,:,:,:,2].to(bool)) & self.wb_mask_tensor.to(bool),:]
+            mask = (self.ttgen_mask_tensor[:,:,:,:,0].to(bool) |
+                    self.ttgen_mask_tensor[:,:,:,:,1].to(bool) |
+                    self.ttgen_mask_tensor[:,:,:,:,2].to(bool)) & self.wb_mask_tensor.to(bool)
+
+        self.coords = mask.nonzero(as_tuple=False).to(torch.int32)
 
 
 def init_dataloaders(opts):
     #Write a function in data.py to initialise the dataset and dataloader. - Clean up this part of the code.
-    d_train = DWIPatchDataset(opts.train_subject_list, training_voxels = True, inference=False, opts=opts)
-    d_val = DWIPatchDataset(opts.val_subject_list, training_voxels = True, inference=False, opts=opts)
+
+    # Shard subjects across DDP ranks so each rank only loads its share into RAM.
+    if dist.is_available() and dist.is_initialized():
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        train_subjects = opts.train_subject_list[rank::world_size]
+        val_subjects   = opts.val_subject_list[rank::world_size]
+    else:
+        train_subjects = opts.train_subject_list
+        val_subjects   = opts.val_subject_list
+
+    d_train = DWIPatchDataset(train_subjects, training_voxels=True, inference=False, opts=opts)
+    d_val   = DWIPatchDataset(val_subjects,   training_voxels=True, inference=False, opts=opts)
 
     train_dataloader = torch.utils.data.DataLoader(d_train, batch_size=opts.batch_size,
-                                            shuffle=True, num_workers=opts.train_workers, 
-                                            drop_last = True)
+                                            shuffle=True, num_workers=opts.train_workers,
+                                            drop_last=True, pin_memory=True)
     val_dataloader = torch.utils.data.DataLoader(d_val, batch_size=256,
                                             shuffle=True, num_workers=opts.val_workers,
-                                            drop_last = True)
-    
+                                            drop_last=True, pin_memory=True)
+
     return train_dataloader, val_dataloader

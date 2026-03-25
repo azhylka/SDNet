@@ -8,8 +8,9 @@ from fixel_loss import network
 import os 
 import sys
 
-import torch 
-import torch.optim.lr_scheduler 
+import torch
+import torch.distributed as dist
+import torch.optim.lr_scheduler
 import matplotlib.pyplot as plt 
 from tqdm import tqdm
 
@@ -70,6 +71,9 @@ class NetworkTrainer():
         '''
         for epoch in range(self.epochs, self.opts.epochs):  # loop over the dataset multiple times
 
+            if isinstance(self.train_dataloader.sampler, torch.utils.data.distributed.DistributedSampler):
+                self.train_dataloader.sampler.set_epoch(epoch)
+
             #The training loop
             for i, data_list in enumerate(tqdm(self.train_dataloader)):
                 
@@ -85,20 +89,23 @@ class NetworkTrainer():
                 
                 #Loading data to GPUs
                 inputs, labels, AQ, gt_fixel, _ = data_list
-                inputs, labels, AQ, gt_fixel = inputs.to(self.opts.device), labels.to(self.opts.device), AQ.to(self.opts.device), gt_fixel.to(self.opts.device)
-            
+                inputs, labels, AQ, gt_fixel = inputs.to(self.opts.device, non_blocking=True), labels.to(self.opts.device, non_blocking=True), AQ.to(self.opts.device, non_blocking=True), gt_fixel.to(self.opts.device, non_blocking=True)
+                
                 # Zero the parameter gradients and setting network to train
                 self.optimizer.zero_grad()
                 self.net.train()
                 
                 self.rttracker.start_timer('sdnet forward pass')
+                # print('---------', inputs.device, '=======', AQ.device)
                 outputs = self.net(inputs, AQ)
                 self.rttracker.stop_timer('sdnet forward pass')
                 self.rttracker.start_timer('fix forward pass')
                 fix_est = self.class_network(outputs.squeeze()[:,:45])
+                gt_fixel = gt_fixel.to(fix_est.device)
                 self.rttracker.stop_timer('fix forward pass')
                 #Calculating the loss function, backpropagation and stepping the optimizer
-                fod_loss = self.criterion(outputs.squeeze()[:,:45], labels[:,:45])
+                # print('----------', outputs.device, '---------------', labels.device)
+                fod_loss = self.criterion(outputs.squeeze()[:,:45], labels[:,:45].to(outputs.device))
                 fixel_loss = self.opts.fixel_lambda*self.class_criterion(fix_est, gt_fixel.long())
                 fixel_accuracy = tracker.fixel_accuracy(fix_est, gt_fixel)
                 
@@ -163,30 +170,33 @@ class NetworkTrainer():
                 self.loss_tracker.add_val_losses(outputs,labels, fixel_loss, fixel_accuracy)
                 self.rttracker.stop_timer('validation iter')
 
-        self.rttracker.start_timer('post val steps')        
-        #Plotting the results using tensorboard using the visualiser class.
-        self.visualiser.add_scalars(self.loss_tracker.train_loss_dict, self.loss_tracker.val_loss_dict, self.current_training_details, epoch, self.iterations)
+        self.rttracker.start_timer('post val steps')
 
-        #Printing the current best validation loss, and the early stopping counter
-        print('Best Loss', self.current_training_details['best_loss'])
-        print('Early stopping counter', self.es.early_stopping_counter)
+        is_main_process = not dist.is_initialized() or dist.get_rank() == 0
 
-        #Updating the training details.
-        self.current_training_details = tracker.update_training_logs(self.loss_tracker.train_loss_dict, self.loss_tracker.val_loss_dict, self.current_training_details, self.model_save_path,
-                                                    self.net, epoch, i, self.opts, self.optimizer, self.param_num, self.train_dataloader, self.es, self.iterations)        
-        
+        if is_main_process:
+            #Plotting the results using tensorboard using the visualiser class.
+            self.visualiser.add_scalars(self.loss_tracker.train_loss_dict, self.loss_tracker.val_loss_dict, self.current_training_details, epoch, self.iterations)
+
+            #Printing the current best validation loss, and the early stopping counter
+            print('Best Loss', self.current_training_details['best_loss'])
+            print('Early stopping counter', self.es.early_stopping_counter)
+
+            #Updating the training details.
+            self.current_training_details = tracker.update_training_logs(self.loss_tracker.train_loss_dict, self.loss_tracker.val_loss_dict, self.current_training_details, self.model_save_path,
+                                                        self.net, epoch, i, self.opts, self.optimizer, self.param_num, self.train_dataloader, self.es, self.iterations)
+
+            training_state_dict = {'net_state': self.net.state_dict(),
+                'optim_state': self.optimizer.state_dict(),
+                'earlystopping_state': self.es.state_dict(),
+                'epochs': epoch,
+                'iterations':self.iterations,
+                'opts': self.opts}
+
+            torch.save(training_state_dict, os.path.join(self.model_save_path, 'most_recent_training.pth'))
+
         #Resetting the losses for the next set of minibatches
         self.loss_tracker.reset_losses()
-
-        
-        training_state_dict = {'net_state': self.net.state_dict(),
-            'optim_state': self.optimizer.state_dict(),
-            'earlystopping_state': self.es.state_dict(),
-            'epochs': epoch,
-            'iterations':self.iterations,
-            'opts': self.opts}
-        
-        torch.save(training_state_dict, os.path.join(self.model_save_path, 'most_recent_training.pth'))
 
         self.rttracker.stop_timer('post val steps')
 
@@ -261,6 +271,17 @@ def init_from_train_dict(train_dict):
 
 if __name__ == '__main__':
     plt.switch_backend('agg')
+
+    dist.init_process_group(backend='nccl')
+    local_rank = int(os.environ['LOCAL_RANK'])
+    torch.cuda.set_device(local_rank)
+    torch.set_num_threads(2)
+
     opts = options.NetworkOptions()
+    opts.local_rank = local_rank
+    opts.device = f'cuda:{local_rank}'
+
+    torch.inverse(torch.ones((1, 1), device=opts.device))
     NT = NetworkTrainer(opts)
     NT.training_loop()
+    dist.destroy_process_group()

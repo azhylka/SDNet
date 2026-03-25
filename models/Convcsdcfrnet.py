@@ -5,8 +5,12 @@ import os
 import math
 import yaml
 
-import torch 
+import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+import options
+torch.serialization.add_safe_globals([options.NetworkOptions])
 
 class CSDNet(nn.Module):
     def __init__(self, opts):
@@ -107,6 +111,7 @@ class CSDNet(nn.Module):
         c_hat = torch.linalg.solve(AQ_TAQ_temp+0.01*torch.eye(18).to(b.device),AQ_Tb[:,:,:,:,[i for i in range(16)]+[45,46],:])
         
         #c_hat = [B,X,Y,Z,18,1] ---> c = [B,X,Y,Z,47,1]
+        # print(c_hat)
         c = torch.zeros((c_hat.shape[0], c_hat.shape[1], c_hat.shape[2], c_hat.shape[3],47,1)).to(b.device)
         c[:,:,:,:,:16,:] = c_hat[:,:,:,:,:16,:]
         c[:,:,:,:,45:,:] = c_hat[:,:,:,:,16:,:]
@@ -156,8 +161,8 @@ def init_network(opts):
     print('Initialising Network')
     net = CSDNet(opts)
     P = net.P.to(opts.device)
-    net = nn.DataParallel(net)
     net = net.to(opts.device)
+    net = DDP(net, device_ids=[opts.local_rank], find_unused_parameters=True)
     
     #Printing the layers and number of parameters of the network.
     print(net)
@@ -189,9 +194,13 @@ def init_network(opts):
         
     else:
         # This code is related to training, not the model - should be in train.py or othe code.
-        assert not os.path.isdir(os.path.join('checkpoints', opts.experiment_name)), f'The experiment {opts.experiment_name} already exists, please select another experiment name'
-        os.mkdir(os.path.join('checkpoints', opts.experiment_name))
-        os.mkdir(os.path.join('checkpoints', opts.experiment_name, 'models'))
-        os.mkdir(os.path.join('checkpoints', opts.experiment_name, 'logs'))
+        # Only rank 0 creates directories; other ranks wait at the barrier.
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            assert not os.path.isdir(os.path.join('checkpoints', opts.experiment_name)), f'The experiment {opts.experiment_name} already exists, please select another experiment name'
+            os.mkdir(os.path.join('checkpoints', opts.experiment_name))
+            os.mkdir(os.path.join('checkpoints', opts.experiment_name, 'models'))
+            os.mkdir(os.path.join('checkpoints', opts.experiment_name, 'logs'))
+        if dist.is_initialized():
+            dist.barrier()
 
     return net, P, param_num, current_training_details, model_save_path
