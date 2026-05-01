@@ -71,9 +71,13 @@ class DWIPatchDataset(torch.utils.data.Dataset):
         #Obtains the signals and the target FOD. The signals which are kept are determined by the keep list.
         input_signals = self.data_tensor[central_coords[0],central_coords[1]-4:central_coords[1]+5, central_coords[2]-4:central_coords[2]+5, central_coords[3]-4:central_coords[3]+5, :]
         
-        target_fod = self.gt_tensor[central_coords[0], central_coords[1], central_coords[2], central_coords[3], :]
+        if not self.inference:
+            target_fod = self.gt_tensor[central_coords[0], central_coords[1], central_coords[2], central_coords[3], :]
 
-        gt_fixel = self.gt_fixel_tensor[central_coords[0], central_coords[1], central_coords[2], central_coords[3]]
+            gt_fixel = self.gt_fixel_tensor[central_coords[0], central_coords[1], central_coords[2], central_coords[3]]
+        else:
+            target_fod = torch.tensor(np.zeros(1))
+            gt_fixel = torch.tensor(np.zeros(1))
 
         AQ = self.AQ_tensor[central_coords[0],:,:]
         
@@ -81,8 +85,9 @@ class DWIPatchDataset(torch.utils.data.Dataset):
     
     def init_data_tensors(self):
         self.load_input_signal()
-        self.load_gt_fixel()
-        self.load_gt_fod()
+        if not self.inference:
+            self.load_gt_fixel()
+            self.load_gt_fod()
         self.load_brain_masks()
         self.load_convolution_matricies()
         self.load_coords()
@@ -163,7 +168,7 @@ class DWIPatchDataset(torch.utils.data.Dataset):
         print('Loading the Spherical Convolution co-ords into RAM')
 
         #Defining the AQ tensor
-        self.AQ_tensor = torch.zeros((len(self.subject_list),self.opts.dwi_number,47))
+        self.AQ_tensor = torch.zeros((len(self.subject_list),self.opts.dwi_number,47)) 
         
         for i, subject in enumerate(self.subject_list):
             #Extracting the undersampled b-vectors and b-values:

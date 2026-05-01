@@ -89,7 +89,7 @@ class NetworkTrainer():
                 
                 #Loading data to GPUs
                 inputs, labels, AQ, gt_fixel, _ = data_list
-                inputs, labels, AQ, gt_fixel = inputs.to(self.opts.device, non_blocking=True), labels.to(self.opts.device, non_blocking=True), AQ.to(self.opts.device, non_blocking=True), gt_fixel.to(self.opts.device, non_blocking=True)
+                inputs, labels, AQ, gt_fixel = inputs.to(self.opts.device, dtype=torch.float32, non_blocking=True), labels.to(self.opts.device, dtype=torch.float32, non_blocking=True), AQ.to(self.opts.device, non_blocking=True), gt_fixel.to(self.opts.device, non_blocking=True)
                 
                 # Zero the parameter gradients and setting network to train
                 self.optimizer.zero_grad()
@@ -156,7 +156,7 @@ class NetworkTrainer():
                     data_list = next(self.val_temp_dataloader)
 
                 inputs, labels, AQ, gt_fixel, _ = data_list
-                inputs, labels, AQ, gt_fixel = inputs.to(self.opts.device), labels.to(self.opts.device), AQ.to(self.opts.device), gt_fixel.to(self.opts.device)
+                inputs, labels, AQ, gt_fixel = inputs.to(self.opts.device, dtype=torch.float32), labels.to(self.opts.device, dtype=torch.float32), AQ.to(self.opts.device), gt_fixel.to(self.opts.device)
 
                 #Could put this in a function connected with the model or alternatively put it in a function on its own
                 self.net.eval()
@@ -255,6 +255,13 @@ def init_from_train_dict(train_dict):
         previous training run
     """    
     opts = train_dict['opts']
+    local_rank = int(os.environ['LOCAL_RANK'])
+    gpu_offset = int(os.environ.get('GPU_OFFSET', 0))
+    device_rank = local_rank + gpu_offset
+    torch.cuda.set_device(device_rank)
+    opts.local_rank = device_rank
+    opts.device = f'cuda:{device_rank}'
+    
     opts.continue_training=True
     iterations = train_dict['iterations']
     epochs = train_dict['epochs']
@@ -273,15 +280,20 @@ if __name__ == '__main__':
     plt.switch_backend('agg')
 
     dist.init_process_group(backend='nccl')
-    local_rank = int(os.environ['LOCAL_RANK'])
-    torch.cuda.set_device(local_rank)
-    torch.set_num_threads(2)
+    try:
+        local_rank = int(os.environ['LOCAL_RANK'])
+        gpu_offset = int(os.environ.get('GPU_OFFSET', 0))
+        device_rank = local_rank + gpu_offset
+        print(f'Assigning rank {local_rank} to cuda:{device_rank}')
+        torch.cuda.set_device(device_rank)
+        torch.set_num_threads(2)
 
-    opts = options.NetworkOptions()
-    opts.local_rank = local_rank
-    opts.device = f'cuda:{local_rank}'
+        opts = options.NetworkOptions()
+        opts.local_rank = device_rank
+        opts.device = f'cuda:{device_rank}'
 
-    torch.inverse(torch.ones((1, 1), device=opts.device))
-    NT = NetworkTrainer(opts)
-    NT.training_loop()
-    dist.destroy_process_group()
+        torch.inverse(torch.ones((1, 1), device=opts.device))
+        NT = NetworkTrainer(opts)
+        NT.training_loop()
+    finally:
+        dist.destroy_process_group()

@@ -94,7 +94,7 @@ def bval_extract(data_dir, subject,diffusion_dir = 'Diffusion' ,sub_dir = None):
     bvals = open(path, 'r')
     
     bvals_str = bvals.read()
-    bvals = [int(b) for b in bvals_str.split()]
+    bvals = [int(float(b)) for b in bvals_str.split()]
     
     return bvals
 

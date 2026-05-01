@@ -32,11 +32,18 @@ class FixelNet(nn.Module):
 
 def init_fixnet(opts):
     #Initialising the network and loading the parameters:
-    # parameter_path = '/home/jxb1336/code/project_1/SDNet/SDNet/fixel_loss/checkpoints/sh-bignet/model_dict.pt'
-    parameter_path = '/bask/projects/d/duanj-ai-imaging/jxb1336/code/SDNet/fixel_loss/checkpoints/sh-bignet/model_dict.pt'
+    parameter_path = '/homes/andrey/S_Source/SDNet/checkpoints/superDWI_fixnet/models/best_training.pth'
 
     net = FixelNet()
-    net.load_state_dict(torch.load(parameter_path))
+    saved_model = torch.load(parameter_path)['net_state']
+    adjusted_model = {}
+    for k in saved_model.keys():
+        if k.startswith('module.'):
+            new_k = k.replace('module.', '')
+        else:
+            new_k = k
+        adjusted_model[new_k] = saved_model[k]
+    net.load_state_dict(adjusted_model)
     
     #Setting the network to be used appropriately as loss
     net.eval()

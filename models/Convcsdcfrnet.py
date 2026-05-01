@@ -126,7 +126,10 @@ class CSDNet(nn.Module):
                 elif self.opts.init_type == 'xavier':
                     nn.init.xavier_uniform_(m.weight, gain=nn.init.calculate_gain(activation))
                 elif self.opts.init_type == 'kaiming':
-                    nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in', nonlinearity=activation)
+                    if activation != 'prelu':
+                        nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in', nonlinearity=activation)
+                    else:
+                        nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in', nonlinearity='leaky_relu')
                 elif self.opts.init_type == 'orthogonal':
                     nn.init.orthogonal_(m.weight, gain=init_gain)
     
@@ -160,14 +163,10 @@ def init_network(opts):
     #Initialising the network and moving it to the correct device.
     print('Initialising Network')
     net = CSDNet(opts)
-    P = net.P.to(opts.device)
-    net = net.to(opts.device)
-    net = DDP(net, device_ids=[opts.local_rank], find_unused_parameters=True)
+    
     
     #Printing the layers and number of parameters of the network.
-    print(net)
-    param_num = sum(p.numel() for p in net.parameters() if p.requires_grad)
-    print(f'The number of parameters in the model is: {param_num}')
+    
 
     model_save_path = os.path.join('checkpoints', opts.experiment_name, 'models')
     current_training_details = {'plot_offset':0, 'previous_loss':math.inf, 'best_loss':math.inf, 'best_val_ACC':0, 'global_epochs':0}
@@ -177,7 +176,16 @@ def init_network(opts):
                                                                             Either change continue training flag to create another experiment, or change the experiment name
                                                                             to load an existing experiment'''
 
-        net.load_state_dict(torch.load(os.path.join(model_save_path,'best_training.pth'))['net_state'])
+        saved_model = torch.load(os.path.join(model_save_path,'best_training.pth'))['net_state']
+        adjusted_model = {}
+        for k in saved_model.keys():
+            if k.startswith('module.'):
+                new_k = k.replace('module.', '')
+            else:
+                new_k = k
+            adjusted_model[new_k] = saved_model[k]
+        net.load_state_dict(adjusted_model)
+        # net.load_state_dict(torch.load(os.path.join(model_save_path,'best_training.pth'))['net_state'])
         
         with open(os.path.join(model_save_path,'training_details.yml'), 'r') as file:
             training_details = yaml.load(file, yaml.loader.SafeLoader)
@@ -187,11 +195,7 @@ def init_network(opts):
         current_training_details['best_loss'] = training_details['best loss']
         current_training_details['previous_loss'] = training_details['best loss']
         current_training_details['best_val_ACC'] = training_details['best ACC']
-        current_training_details['global_epochs'] = training_details['epochs_count']
-
-        
-        
-        
+        current_training_details['global_epochs'] = training_details['epochs_count']     
     else:
         # This code is related to training, not the model - should be in train.py or othe code.
         # Only rank 0 creates directories; other ranks wait at the barrier.
@@ -203,4 +207,11 @@ def init_network(opts):
         if dist.is_initialized():
             dist.barrier()
 
+    P = net.P.to(opts.device)
+    net = net.to(opts.device)
+    print('Local rank: ', opts.local_rank, 'Device: ', opts.device)
+    net = DDP(net, device_ids=[opts.local_rank], find_unused_parameters=True)
+    print(net)
+    param_num = sum(p.numel() for p in net.parameters() if p.requires_grad)
+    print(f'The number of parameters in the model is: {param_num}')
     return net, P, param_num, current_training_details, model_save_path

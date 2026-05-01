@@ -58,9 +58,13 @@ class LossTracker():
     def add_val_losses(self, outputs, labels, val_fixel_loss, val_fixel_accuracy):
         
         loss = self.criterion(outputs.squeeze()[:,:45], labels[:,:45])
+
+        acc=util.ACC(outputs,labels)
+        print('ACC --- ', acc)
+        print(outputs[torch.isnan(acc)][:1,...], labels[torch.isnan(acc)][:1,...])
         
         self.val_loss_dict['Validation Loss'] += loss.item()
-        self.val_loss_dict['Validation ACC'] += util.ACC(outputs,labels).mean()
+        self.val_loss_dict['Validation ACC'] += util.ACC(outputs,labels).nanmean()
         self.val_loss_dict['Validation Fixel Loss'] += val_fixel_loss.item()
         self.val_loss_dict['Validation Fixel Accuracy'] += val_fixel_accuracy.item()
 
